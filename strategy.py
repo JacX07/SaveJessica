@@ -22,9 +22,9 @@ def choose_morties(max_per_trip: int, p_survive: float) -> int:
     """
     Determine number of Morties to send based on estimated survival rate.
     """
-    if p_survive >= 0.75:
+    if p_survive >= 0.9:
         return max_per_trip
-    elif p_survive >= 0.5:
+    elif p_survive >= 0.7:
         return max(2, max_per_trip)
     else:
         return 1
@@ -375,81 +375,6 @@ class UCBSlidingWindowStrategy(MortyRescueStrategy):
         print(f"Total Steps: {final['steps_taken']}")
         print(f"Success Rate: {(final['morties_on_planet_jessica']/1000)*100:.2f}%")
 
-
-class SinusPredictiveStrategy(MortyRescueStrategy):
-    """Predict survival peaks using sinusoidal modeling with adaptive Morties."""
-    
-    def __init__(self, client, exploration_trips=10):
-        super().__init__(client)
-        self.exploration_trips = exploration_trips
-        self.total_trips = 0
-        self.planet_history = {i: [] for i in range(3)}
-        self.planet_params = {}
-    
-    @staticmethod
-    def _sin_func(x, A, B, phi, C):
-        return A * np.sin(B * x + phi) + C
-    
-    def _fit_sinus(self, planet_id):
-        history = self.planet_history[planet_id]
-        if len(history) < 5:
-            return None
-        x = np.array([trip for trip, _ in history])
-        y = np.array([survived for _, survived in history])
-        guess = [0.5, 2*np.pi/len(x), 0, np.mean(y)]
-        try:
-            params, _ = curve_fit(self._sin_func, x, y, p0=guess, maxfev=5000)
-            return params
-        except:
-            return None
-    
-    def _predict_survival(self, planet_id, next_trip):
-        if planet_id not in self.planet_params:
-            return 0.5
-        A, B, phi, C = self.planet_params[planet_id]
-        return self._sin_func(next_trip, A, B, phi, C)
-    
-    def execute_strategy(self, morties_per_trip=2):
-        print("\n=== EXECUTING SINUS PREDICTIVE STRATEGY ===")
-        exploration_df = self.explore_phase(trips_per_planet=self.exploration_trips)
-        
-        for planet_id, group in exploration_df.groupby("planet"):
-            for _, row in group.iterrows():
-                self.planet_history[planet_id].append((row["trip_number"], row["survived"]))
-                self.total_trips += 1
-        
-        status = self.client.get_status()
-        morties_remaining = status["morties_in_citadel"]
-        last_saved = status["morties_on_planet_jessica"]
-        
-        while morties_remaining > 0:
-            next_trip = self.total_trips + 1
-            for pid in range(3):
-                params = self._fit_sinus(pid)
-                if params is not None:
-                    self.planet_params[pid] = params
-            predictions = {pid: self._predict_survival(pid, next_trip) for pid in range(3)}
-            chosen = max(predictions, key=predictions.get)
-            p_estimate = predictions[chosen]
-            to_send = min(choose_morties(morties_per_trip, p_estimate), morties_remaining)
-            
-            result = self.client.send_morties(chosen, to_send)
-            saved_now = max(result["morties_on_planet_jessica"] - last_saved, 0)
-            last_saved = result["morties_on_planet_jessica"]
-            
-            self.planet_history[chosen].append((next_trip, saved_now))
-            self.total_trips += 1
-            morties_remaining = result["morties_in_citadel"]
-            
-            if self.total_trips % 50 == 0:
-                print(f"  Trips: {self.total_trips}, Send: {1000-morties_remaining}, Saved: {last_saved}, Remaining: {morties_remaining}")
-        final = self.client.get_status()
-        print("\n=== FINAL RESULTS ===")
-        print(f"Morties Saved: {final['morties_on_planet_jessica']}")
-        print(f"Morties Lost: {final['morties_lost']}")
-        print(f"Total Steps: {final['steps_taken']}")
-        print(f"Success Rate: {(final['morties_on_planet_jessica']/1000)*100:.2f}%")
-
 import matplotlib.pyplot as plt
 
 class ProbeSinglePlanetStrategy(MortyRescueStrategy):
@@ -527,6 +452,195 @@ class ProbeSinglePlanetStrategy(MortyRescueStrategy):
         plt.show()
         print(f"Saved: {file2}")
 
+class SinusStochasticStrategy(MortyRescueStrategy):
+    """
+    Strategy combining sinusoidal prediction with stochastic adjustment.
+    Exploits predicted peaks but accounts for stochastic variations in survival.
+    """
+
+    def __init__(self, client, exploration_trips=10, window_size=20):
+        super().__init__(client)
+        self.exploration_trips = exploration_trips
+        self.window_size = window_size
+        self.total_trips = 0
+
+        # History: list of (trip_number, survived) for each planet
+        self.planet_history = {i: [] for i in range(3)}
+        self.planet_recent = {i: [] for i in range(3)}  # recent trips for stochastic adjustment
+        self.planet_params = {}  # fitted A, phi, C per planet
+        self.planet_freqs = {0: 2*np.pi/10, 1: 2*np.pi/20, 2: 2*np.pi/200}  # fixed frequencies
+
+    @staticmethod
+    def _sin_func(x, A, B, phi, C):
+        return A * np.sin(B * x + phi) + C
+
+    def _fit_sinus(self, planet_id):
+        history = self.planet_history[planet_id]
+        if len(history) < 5:
+            return None
+        x = np.array([trip for trip, _ in history])
+        y = np.array([survived for _, survived in history])
+        B = self.planet_freqs[planet_id]
+        guess = [0.5, 0, np.mean(y)]  # A, phi, C
+        try:
+            def sin_fixed_B(x, A, phi, C):
+                return self._sin_func(x, A, B, phi, C)
+            params, _ = curve_fit(sin_fixed_B, x, y, p0=guess, maxfev=5000)
+            return params  # A, phi, C
+        except Exception:
+            return None
+
+    def _predict_survival(self, planet_id, next_trip):
+        if planet_id in self.planet_params:
+            A, phi, C = self.planet_params[planet_id]
+            B = self.planet_freqs[planet_id]
+            pred = self._sin_func(next_trip, A, B, phi, C)
+        else:
+            pred = 0.5
+        recent = self.planet_recent[planet_id]
+        if recent:
+            pred = 0.7 * pred + 0.3 * np.mean(recent)
+        return pred
+
+    def _update_planet_stats(self, planet_id, survived):
+        self.planet_history[planet_id].append((self.total_trips + 1, survived))
+        recent = self.planet_recent[planet_id]
+        recent.append(survived)
+        if len(recent) > self.window_size:
+            recent.pop(0)
+
+    def execute_strategy(self, morties_per_trip=1):
+        print("\n=== EXECUTING SINUS + STOCHASTIC STRATEGY ===")
+
+        exploration_df = self.explore_phase(trips_per_planet=self.exploration_trips)
+        for planet_id, group in exploration_df.groupby("planet"):
+            for _, row in group.iterrows():
+                self._update_planet_stats(planet_id, row["survived"])
+                self.total_trips += 1
+
+        status = self.client.get_status()
+        morties_remaining = status["morties_in_citadel"]
+        last_saved = status["morties_on_planet_jessica"]
+
+        while morties_remaining > 0:
+            next_trip = self.total_trips + 1
+            # Fit sinusoids
+            for pid in range(3):
+                params = self._fit_sinus(pid)
+                if params is not None:
+                    self.planet_params[pid] = params
+
+            # Predict survival
+            predictions = {pid: self._predict_survival(pid, next_trip) for pid in range(3)}
+            chosen = max(predictions, key=predictions.get)
+            p_estimate = predictions[chosen]
+
+            to_send = min(choose_morties(morties_per_trip, p_estimate), morties_remaining)
+            result = self.client.send_morties(chosen, to_send)
+
+            saved_now = max(result["morties_on_planet_jessica"] - last_saved, 0)
+            last_saved = result["morties_on_planet_jessica"]
+
+            self._update_planet_stats(chosen, saved_now)
+            self.total_trips += 1
+            morties_remaining = result["morties_in_citadel"]
+
+            if self.total_trips % 50 == 0:
+                print(f"  Trips: {self.total_trips}, Send: {1000-morties_remaining},  Saved: {last_saved}, Remaining: {morties_remaining}")
+
+        final = self.client.get_status()
+        print("\n=== FINAL RESULTS ===")
+        print(f"Morties Saved: {final['morties_on_planet_jessica']}")
+        print(f"Morties Lost: {final['morties_lost']}")
+        print(f"Total Steps: {final['steps_taken']}")
+        print(f"Success Rate: {(final['morties_on_planet_jessica']/1000)*100:.2f}%")
+
+
+class SinusPredictiveStrategy(MortyRescueStrategy):
+    """Predict survival peaks using sinusoidal modeling with fixed frequencies."""
+
+    def __init__(self, client, exploration_trips=10):
+        super().__init__(client)
+        self.exploration_trips = exploration_trips
+        self.total_trips = 0
+        self.planet_history = {i: [] for i in range(3)}
+        self.planet_params = {}  # A, phi, C
+        self.planet_freqs = {0: 2*np.pi/10, 1: 2*np.pi/20, 2: 2*np.pi/200}
+
+    @staticmethod
+    def _sin_func(x, A, B, phi, C):
+        return A * np.sin(B * x + phi) + C
+
+    def _fit_sinus(self, planet_id):
+        history = self.planet_history[planet_id]
+        if len(history) < 5:
+            return None
+        x = np.array([trip for trip, _ in history])
+        y = np.array([survived for _, survived in history])
+        B = self.planet_freqs[planet_id]
+        guess = [0.5, 0, np.mean(y)]
+        try:
+            def sin_fixed_B(x, A, phi, C):
+                return self._sin_func(x, A, B, phi, C)
+            params, _ = curve_fit(sin_fixed_B, x, y, p0=guess, maxfev=5000)
+            return params  # A, phi, C
+        except:
+            return None
+
+    def _predict_survival(self, planet_id, next_trip):
+        if planet_id not in self.planet_params:
+            return 0.5
+        A, phi, C = self.planet_params[planet_id]
+        B = self.planet_freqs[planet_id]
+        return self._sin_func(next_trip, A, B, phi, C)
+
+    def execute_strategy(self, morties_per_trip=2):
+        print("\n=== EXECUTING SINUS PREDICTIVE STRATEGY ===")
+        exploration_df = self.explore_phase(trips_per_planet=self.exploration_trips)
+
+        for planet_id, group in exploration_df.groupby("planet"):
+            for _, row in group.iterrows():
+                # Global trip number
+                self.planet_history[planet_id].append((self.total_trips + 1, row["survived"]))
+                self.total_trips += 1
+
+        status = self.client.get_status()
+        morties_remaining = status["morties_in_citadel"]
+        last_saved = status["morties_on_planet_jessica"]
+
+        while morties_remaining > 0:
+            next_trip = self.total_trips + 1
+            for pid in range(3):
+                params = self._fit_sinus(pid)
+                if params is not None:
+                    self.planet_params[pid] = params
+
+            predictions = {pid: self._predict_survival(pid, next_trip) for pid in range(3)}
+            chosen = max(predictions, key=predictions.get)
+            p_estimate = predictions[chosen]
+
+            to_send = min(choose_morties(morties_per_trip, p_estimate), morties_remaining)
+            result = self.client.send_morties(chosen, to_send)
+
+            saved_now = max(result["morties_on_planet_jessica"] - last_saved, 0)
+            last_saved = result["morties_on_planet_jessica"]
+
+            self.planet_history[chosen].append((next_trip, saved_now))
+            self.total_trips += 1
+            morties_remaining = result["morties_in_citadel"]
+
+            if self.total_trips % 50 == 0:
+                print(f"  Trips: {self.total_trips}, Send: {1000-morties_remaining},  Saved: {last_saved}, Remaining: {morties_remaining}")
+
+        final = self.client.get_status()
+        print("\n=== FINAL RESULTS ===")
+        print(f"Morties Saved: {final['morties_on_planet_jessica']}")
+        print(f"Morties Lost: {final['morties_lost']}")
+        print(f"Total Steps: {final['steps_taken']}")
+        print(f"Success Rate: {(final['morties_on_planet_jessica']/1000)*100:.2f}%")
+
+
+
 
 if __name__ == "__main__":
     print("Morty Express Challenge - Strategy Module")
@@ -549,4 +663,4 @@ if __name__ == "__main__":
 
     
     # Uncomment to run:
-    run_strategy(ProbeSinglePlanetStrategy, explore_trips=10)
+    run_strategy(SinusPredictiveStrategy, explore_trips=30)
