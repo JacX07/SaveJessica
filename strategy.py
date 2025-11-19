@@ -22,10 +22,11 @@ def choose_morties(max_per_trip: int, p_survive: float) -> int:
     """
     Determine number of Morties to send based on estimated survival rate.
     """
-    if p_survive >= 0.9:
-        return max_per_trip
-    elif p_survive >= 0.7:
-        return max(2, max_per_trip)
+    
+    if p_survive >= 0.89:
+        return 3
+    elif p_survive >= 0.74:
+        return 2
     else:
         return 1
 
@@ -54,8 +55,9 @@ class MortyRescueStrategy:
             DataFrame with exploration data
         """
         print("\n=== EXPLORATION PHASE ===")
-        df = self.collector.explore_all_planets(
-            trips_per_planet=trips_per_planet,
+        df = self.collector.explore_planet(
+            planet=2,
+            num_trips=trips_per_planet,
             morty_count=1  # Send 1 Morty at a time during exploration
         )
         self.exploration_data = df
@@ -569,7 +571,7 @@ class SinusPredictiveStrategy(MortyRescueStrategy):
 
     @staticmethod
     def _sin_func(x, A, B, phi, C):
-        return A * np.sin(B * x + phi) + C
+        return 0.5 * np.sin(B * x + phi) + 0.5
 
     def _fit_sinus(self, planet_id):
         history = self.planet_history[planet_id]
@@ -589,10 +591,84 @@ class SinusPredictiveStrategy(MortyRescueStrategy):
 
     def _predict_survival(self, planet_id, next_trip):
         if planet_id not in self.planet_params:
-            return 0.5
+            return 0.6
         A, phi, C = self.planet_params[planet_id]
         B = self.planet_freqs[planet_id]
         return self._sin_func(next_trip, A, B, phi, C)
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    def plot_sinus_vs_history(self):
+        plt.figure(figsize=(12, 6))
+
+        for pid in range(3):
+            # Récupération de l'historique
+            history = self.planet_history[pid]
+            if len(history) == 0:
+                continue
+            trips = [t for t, _ in history]
+            survived = [s for _, s in history]
+
+            # Tracé des points réels
+            plt.scatter(trips, survived, label=f'Planet {pid} actual', alpha=0.7)
+
+            # Tracé du sinus ajusté si disponible
+            if pid in self.planet_params:
+                A, phi, C = self.planet_params[pid]
+                B = self.planet_freqs[pid]
+                x_fit = np.linspace(min(trips), max(trips)+10, 200)
+                y_fit = self._sin_func(x_fit, A, B, phi, C)
+                plt.plot(x_fit, y_fit, label=f'Planet {pid} fitted sinus')
+
+        plt.xlabel("Trip number")
+        plt.ylabel("Predicted / actual survival")
+        plt.title("Survival history vs fitted sinus for each planet")
+        plt.ylim(0, 1)
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    def plot_survival_with_sinus(self, n_trips=200):
+        plt.figure(figsize=(12, 6))
+        
+        for pid in range(3):
+            history = self.planet_history[pid]
+            if len(history) == 0:
+                continue
+            
+            trips_hist = [t for t,_ in history]
+            saved_hist = [s for _,s in history]
+            # Taux cumulatif réel
+            cum_saved = np.cumsum(saved_hist)
+            survival_rate = cum_saved / np.arange(1, len(saved_hist)+1)
+            plt.plot(trips_hist, survival_rate, 'o', label=f'Planet {pid} observed', alpha=0.5)
+            
+            # Courbe sinus prédictive
+            if pid in self.planet_params:
+                A, phi, C = self.planet_params[pid]
+                B = self.planet_freqs[pid]
+                trips_future = np.arange(1, n_trips+1)
+                sinus_pred = A * np.sin(B*trips_future + phi) + 0.5
+                plt.plot(trips_future, sinus_pred, '-', label=f'Planet {pid} predicted')
+                
+                # ligne taux max théorique
+                p_max = 0.5 + A
+                plt.hlines(p_max, 1, n_trips, colors='r', linestyles='dashed', 
+                        label=f'Planet {pid} max theoretical' if pid==0 else None)
+        
+        plt.xlabel("Trip number")
+        plt.ylabel("Survival rate")
+        plt.title("Morty Survival: Observed vs Sinus Predicted")
+        plt.ylim(0, 1)
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
 
     def execute_strategy(self, morties_per_trip=2):
         print("\n=== EXECUTING SINUS PREDICTIVE STRATEGY ===")
@@ -607,7 +683,8 @@ class SinusPredictiveStrategy(MortyRescueStrategy):
         status = self.client.get_status()
         morties_remaining = status["morties_in_citadel"]
         last_saved = status["morties_on_planet_jessica"]
-
+        current_planet = None
+        deaths = 0
         while morties_remaining > 0:
             next_trip = self.total_trips + 1
             for pid in range(3):
@@ -617,8 +694,17 @@ class SinusPredictiveStrategy(MortyRescueStrategy):
 
             predictions = {pid: self._predict_survival(pid, next_trip) for pid in range(3)}
             chosen = max(predictions, key=predictions.get)
+            
             p_estimate = predictions[chosen]
 
+            
+
+            if chosen != current_planet:
+                current_planet = chosen
+                print(f"Next trip {next_trip}: Planet {current_planet} predicted p={p_estimate:.3f}")
+
+            
+            
             to_send = min(choose_morties(morties_per_trip, p_estimate), morties_remaining)
             result = self.client.send_morties(chosen, to_send)
 
@@ -628,9 +714,13 @@ class SinusPredictiveStrategy(MortyRescueStrategy):
             self.planet_history[chosen].append((next_trip, saved_now))
             self.total_trips += 1
             morties_remaining = result["morties_in_citadel"]
-
+            rate = last_saved / (1000 - morties_remaining)
+            previous_deaths = deaths
             if self.total_trips % 50 == 0:
-                print(f"  Trips: {self.total_trips}, Send: {1000-morties_remaining},  Saved: {last_saved}, Remaining: {morties_remaining}")
+                deaths = (1000 - morties_remaining ) - last_saved
+                delta = (deaths - previous_deaths)
+                print(f"  Trips: {self.total_trips}, Send: {1000-morties_remaining},  Saved: {last_saved}, Remaining: {morties_remaining},Deaths:{deaths:.2f},Delta:{delta:.2f} ")
+                print(f"Survival rate: {rate:.2f}")
 
         final = self.client.get_status()
         print("\n=== FINAL RESULTS ===")
@@ -638,8 +728,8 @@ class SinusPredictiveStrategy(MortyRescueStrategy):
         print(f"Morties Lost: {final['morties_lost']}")
         print(f"Total Steps: {final['steps_taken']}")
         print(f"Success Rate: {(final['morties_on_planet_jessica']/1000)*100:.2f}%")
-
-
+        self.plot_sinus_vs_history()
+        
 
 
 if __name__ == "__main__":

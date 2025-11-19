@@ -1,0 +1,17 @@
+- phase d'exploration
+
+
+
+Après la phase d'exploration, nous avons essayer d'approximer la probabilité par une fonction sinus en fonction du nombre de voyage. 
+Pour cela, nous avons un modèle : 
+proba(voyage) = 0.5*sinus(B*voyage + phase) + 0.5  où B est la période du sinus obtenue lors d'une phase de test pour chaque planète.
+On choisit la planète avec la probabilité de survie estimée la plus élevée, avec proba = 0.6 s'il y a moins de 5 voyages effectués sur celle-ci.
+
+Concernant le nombre de morty envoyé, on regarde par rapport à la probabilité de survie estimée. 
+Si elle est inférieure à 0.74, on en envoie 1, si elle est entre 0.74 et 0.89, on en envoie 2 et 3 sinon. 
+
+On obtient des scores entre 85% et 90%
+
+
+7df65a4e5044545342f73f4723b7a4ff53e06d92
+
