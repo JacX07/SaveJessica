@@ -9,7 +9,7 @@ The challenge: The survival probability of each planet changes over time
 changing conditions.
 """
 
-from typing_extensions import final
+from abc import ABC, abstractmethod
 from api_client import SphinxAPIClient
 from data_collector import DataCollector
 import pandas as pd
@@ -30,8 +30,8 @@ def choose_morties(max_per_trip: int, p_survive: float) -> int:
     else:
         return 1
 
-class MortyRescueStrategy:
-    """Base class for implementing rescue strategies."""
+class MortyRescueStrategy(ABC):
+    """Abstract base class for implementing rescue strategies."""
     
     def __init__(self, client: SphinxAPIClient):
         """
@@ -75,12 +75,13 @@ class MortyRescueStrategy:
         
         return self.collector.analyze_risk_changes(self.exploration_data)
     
+    @abstractmethod
     def execute_strategy(self):
         """
         Execute the main rescue strategy.
-        Override this method to implement your own strategy.
+        Must be implemented by subclasses.
         """
-        raise NotImplementedError("Implement your strategy in a subclass")
+        pass
 
 
 class SimpleGreedyStrategy(MortyRescueStrategy):
