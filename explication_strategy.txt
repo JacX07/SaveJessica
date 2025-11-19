@@ -1,6 +1,11 @@
-- phase d'exploration
-
-
+Pour la phase d'exploration, on effectue 10 voyages avec 10 morty pour estimer la survivabilité de la planète 2 
+ainsi que sa phase. Notre but étant d'approximer le sinus, ces morty serviront uniquement d'explorateur. 
+Pourquoi j'ai choisi d'en envoyer que 10 sur la planète 2, car cela permet de maximiser le temps passé en haut
+de la courbe de survie du sinus de la planète 2 lors des runs ou la survivabilité est à 100%. Bien sur cette
+méthode ne fonctionne pas à tout les coups et a une grande variance mais permet les meilleurs résultats lorsque
+l'on est chanceux. Ainsi, comme la période des deux autres planètes est plus basse, il n'est pas nécessaire 
+d'envoyer des morty d'exploration sur ces planètes , on pourra l'estimer après avoir observer que la planète 2
+a un taux de survie plus bas.
 
 Après la phase d'exploration, nous avons essayer d'approximer la probabilité par une fonction sinus en fonction du nombre de voyage. 
 Pour cela, nous avons un modèle : 
